@@ -1,0 +1,96 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: factmarrow-db
+    environment:
+      POSTGRES_USER: factmarrow
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: factmarrow
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./src/database/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+    networks:
+      - factmarrow-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U factmarrow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: factmarrow-cache
+    ports:
+      - "6379:6379"
+    networks:
+      - factmarrow-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Docker MCP Gateway
+  mcp-gateway:
+    image: docker/mcp-gateway:latest
+    container_name: factmarrow-mcp
+    environment:
+      MCP_SERVERS: "github,duckduckgo"
+      GITHUB_TOKEN: ${GITHUB_TOKEN}
+    ports:
+      - "8000:8000"
+    networks:
+      - factmarrow-network
+    depends_on:
+      - postgres
+
+  # Chroma Vector Database
+  chroma:
+    image: chromadb/chroma:latest
+    container_name: factmarrow-vector
+    ports:
+      - "8001:8000"
+    networks:
+      - factmarrow-network
+    volumes:
+      - chroma_data:/chroma/data
+
+  # FactMarrow API Server
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: factmarrow-api
+    environment:
+      DATABASE_URL: postgresql://factmarrow:${DB_PASSWORD}@postgres:5432/factmarrow
+      REDIS_URL: redis://redis:6379/0
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      GITHUB_TOKEN: ${GITHUB_TOKEN}
+    ports:
+      - "8080:8080"
+    networks:
+      - factmarrow-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mcp-gateway:
+        condition: service_started
+    volumes:
+      - ./src:/app/src
+      - ./data:/app/data
+
+volumes:
+  postgres_data:
+  chroma_data:
+
+networks:
+  factmarrow-network:
+    driver: bridge
